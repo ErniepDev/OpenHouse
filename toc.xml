@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Addon Author="MisterP" APIVersion="11" Name="OpenHouse" Description="">
+    <Script Name="OpenHouse.lua"/>
+    <Form Name="OpenHouse.xml"/>
+</Addon>
