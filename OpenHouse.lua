@@ -25,7 +25,8 @@ local nRandomHousesSize= 25
 --House Grid Columns
 local sPlayerNameColumn = 1
 local sPropertyNameColumn = 2
-local sNotesColumn = 3
+local sPlugsColumn = 3
+local sNotesColumn = 4
 
 -----------------------------------------------------------------------------------------------
 -- Misc Items
@@ -33,7 +34,7 @@ local sNotesColumn = 3
 
 local tHouseTemplate = {}
 
-tHouseTemplate.prototype = {sPlayerName = "", sPropertyName = "", tPlugs = {}, sNotes = ""}
+tHouseTemplate.prototype = {sPlayerName = "", sPropertyName = "", sPlugs = "", sNotes = ""}
 tHouseTemplate.metaTable = {}
 tHouseTemplate.metaTable.__index = tHouseTemplate.prototype
 
@@ -74,6 +75,8 @@ function OpenHouse:new(o)
 	o.settings.tAnchorOffsets [2] = 0
 	o.settings.tAnchorOffsets [3] = nWindowWitdthWithoutDetails 
 	o.settings.tAnchorOffsets [4] = 730
+	
+	o.settings.hasSaveTransitioned = false
 	
     return o
 end
@@ -122,6 +125,9 @@ function OpenHouse:OnDocLoaded()
 		-- Register handlers for events, slash commands and timer, etc.
 		-- e.g. Apollo.RegisterEventHandler("KeyDown", "OnKeyDown", self)
 		Apollo.RegisterSlashCommand("oh", "OnOpenHouseOn", self)
+		Apollo.RegisterSlashCommand("ohadd", "OnOpenHouseAdd", self)
+		Apollo.RegisterSlashCommand("ohvisit", "OnOpenHouseVisit", self)
+		Apollo.RegisterSlashCommand("ohhome", "OnOpenHouseGoHome", self)
 		
 		Apollo.RegisterEventHandler("HousingRandomResidenceListRecieved", "OnHousingRandomResidenceListRecieved", self)
 		Apollo.RegisterEventHandler("GridDoubleClick", "OnGridDoubleClick", self)	
@@ -134,6 +140,8 @@ function OpenHouse:OnDocLoaded()
 		for k,v in pairs(self.favHouses) do
 			setmetatable(self.favHouses[k],tHouseTemplate.metaTable)
 		end
+		
+		self:FavHouseKeyCleanup()
 	end
 end
 
@@ -143,25 +151,76 @@ end
 -- Define general functions here
 
 -- on SlashCommand "/oh"
+
+function OpenHouse:FavHouseKeyCleanup()
+	for k,v in pairs(self.favHouses) do
+		if k ~= string.lower(k) then
+			local lowerKey = string.lower(k)
+			self.favHouses[lowerKey] = v
+			self.favHouses[k] = nil
+		end
+	end
+end
 function OpenHouse:OnOpenHouseOn()
 	self:OnToggleOpenHouse()
+	self:SendToRover("a",self.settings.hasSaveTransitioned)
 end
+
+function OpenHouse:OnOpenHouseAdd(strCommand, sInput)
+
+	if sInput ~= "" then
+		local input = {}
+		local idx = 1
+		
+		for i in string.gmatch(sInput, '([^,]+)') do
+			input[idx] = i
+			idx = idx+1  
+		end
+		
+		local sPlayerName = input[1] or ""
+		local sNote = input[2] or ""
+
+		self:AddHouseByName(sPlayerName, sNote)
+		return
+	end
+	
+	if HousingLib.IsHousingWorld() then
+		self:OnFavCurrentHouse()
+	end
+end
+
+function OpenHouse:OnOpenHouseVisit(strCommand, sInput)
+
+	if sInput ~= "" and HousingLib.IsHousingWorld() then
+		HousingLib.RequestVisitPlayer(sInput)
+	end
+
+end
+
+function OpenHouse:OnOpenHouseGoHome()
+	if HousingLib.IsHousingWorld() then
+		HousingLib.RequestVisitPlayer(GameLib.GetPlayerUnit():GetName())
+	end
+end
+
+
 
 function OpenHouse:OnToggleOpenHouse()
 	if self.wndMain:IsVisible() == false then
 		self.wndMain:Invoke() -- show the window
 		self:SetupMainForm()
-	
+
+		--set the property name if opened in residence
+		self:SetCurrentPropertyAttributes()
+		
 		-- populate the item list
 		self:PopulateHouseGrid()
-		
-		--set the property name if opened in residence
-		self:SetCurrentPropertyName()
 		
 		--Get a list of random houses. Done here to have them ready as doing it in the button sometimes tries to visit before getting a list
 		HousingLib.RequestRandomResidenceList()	
 		
 		CopyTable(self.favHouses,self.tTempFavHouses)
+
 	else
 		self:OnCancel()
 	end
@@ -209,15 +268,28 @@ function CopyTable(from, to)
 end
 
 --Add player/house to internal list and grid
-function OpenHouse:AddFavHouse(house)
+function OpenHouse:AddFavHouse(house, shouldUpdateHouseDetails)
 	
-	local sPlayerName = house.sPlayerName
+	local sPlayerName = string.lower(house.sPlayerName)
 
 	if not self:IsPlayerFavorited(sPlayerName) then
 	
 		self.favHouses[sPlayerName] = house
-		self:AddItemToHouseGrid(self.favHouses[sPlayerName])
+		
+		if shouldUpdateHouseDetails then
+			self:SetCurrentPropertyAttributes()
 			
+		end
+		
+		self:AddItemToHouseGrid(self.favHouses[sPlayerName])
+	else
+		local currentHouseNotes = self.favHouses[sPlayerName].sNotes 
+		if  currentHouseNotes ~= house.sNotes then
+			self.favHouses[sPlayerName].sNotes = currentHouseNotes  .. " " .. house.sNotes
+			if self.wndMain:IsVisible() then
+				self:PopulateHouseGrid()
+			end
+		end	
 	end
 end
 
@@ -252,38 +324,62 @@ end
 --Set the property name of the house
 function OpenHouse:OnZoneChange()
 
+	self:SetCurrentPropertyAttributes()
+
 	if self.wndMain:IsVisible() then
 		self:ToggleEnableButtons()
-		self:SetCurrentPropertyName()
+		self:PopulateHouseGrid()
 	end
+	
 end
 
+
 --Sets the property name if in a favorited housing area
-function OpenHouse:SetCurrentPropertyName()
+function OpenHouse:SetCurrentPropertyAttributes()
 	
 	if HousingLib.IsHousingWorld() then
-	
-		local sPropertyName = self:GetCurrentPropertyName() 
-		local sPropertyOwner = self:GetCurrentPropertyOwner()
-	
-		if sPropertyName and sPropertyOwner then
-			local nSelectedRowNumber = self:GetSelectedGridRow("houseGrid")
-			local sSelectedPlayer = self:GetSelectedPlayerFromGrid()
+		
+		local tCurrentResidence = HousingLib.GetResidence()
+		
+		if tCurrentResidence then
+		
+			local sPropertyName = tCurrentResidence:GetPropertyName()
+			local sPropertyOwner = string.lower(tCurrentResidence:GetPropertyOwnerName())
 			
-			if nSelectedRowNumber and sSelectedPlayer then
+			if sPropertyOwner then
 				if self.favHouses[sPropertyOwner] then
-					if self.favHouses[sSelectedPlayer].sPropertyName ~= sPropertyName then	
-						self.favHouses[sSelectedPlayer].sPropertyName = sPropertyName 
-	
-						local wnd = self.wndMain:FindChild("houseGrid")
-			
-						if wnd then
-							wnd:SetCellText(nSelectedRowNumber ,sPropertyNameColumn ,sPropertyName )
-						end	
+					--Player House Name
+					if self.favHouses[sPropertyOwner].sPropertyName ~= sPropertyName then	
+						self.favHouses[sPropertyOwner].sPropertyName = sPropertyName 
 					end
-				end
-			end
-		end	
+		
+					--Get Plots									
+					local nPlotCount = tCurrentResidence:GetPlotCount()
+					local tPlugs = {}
+					local sPlugsConcat
+					
+					for idx=1, nPlotCount do
+						local sPlugName = HousingLib.GetPlot(idx):GetPlugName() 
+						
+						if sPlugName then
+							tPlugs[#tPlugs + 1] = sPlugName
+						end
+					end		
+				
+					sPlugsConcat= table.concat(tPlugs,", ")
+					
+					if self.favHouses[sPropertyOwner].sPlugs ~= sPlugsConcat then	
+						self.favHouses[sPropertyOwner].sPlugs = sPlugsConcat 
+					end
+									
+					local nSelectedRowNumber = self:GetSelectedGridRow("houseGrid")
+					local sSelectedPlayer = self:GetSelectedPlayerFromGrid()
+
+				end				
+			end		
+			
+		end
+	
 	end
 end
 
@@ -358,16 +454,30 @@ function OpenHouse:OnGridDoubleClick(wndHandler,wndControl,iRow,iCol)
 	self:OnVisitPlayerHouse()
 end
 
-function OpenHouse:OnGridSelChanged(wndHandler,wndControl,iRow, iCol, iCurrRow, iCurrCol,bAllowCHange)
-	self.tSelectedHouse = self.favHouses[self:GetSelectedPlayerFromGrid()]
-	
-	self:SetDetailsPaneValues()
+function OpenHouse:OnGridSelChanged(wndHandler,wndControl,iRow, iCol, iCurrRow, iCurrCol,bAllowChange)
+	self.tSelectedHouse = self.favHouses[string.lower(self:GetSelectedPlayerFromGrid())]
+		
+	if not self.tSelectedHouse then
+		local wnd = self.wndMain:FindChild("houseGrid")
 
+		local nRow = iRow - 1
+		
+		if nRow and nRow > 0 then
+			local sPlayerName = string.lower(wnd:GetCellText(nRow,sPlayerNameColumn))
+			self.tSelectedHouse = self.favHouses[sPlayerName]
+		end
+	end
+	
+	if self.tSelectedHouse then
+		self:SetDetailsPaneValues()
+	else
+		self:ClearDetailsPaneValues()
+	end 
 end
 
 --Return player name from house grid
 function OpenHouse:GetSelectedPlayerFromGrid()
-	return self:GetSelectedGridItem("houseGrid",1)
+	return self:GetSelectedGridItem("houseGrid",sPlayerNameColumn)
 end
 
 --Return selected row from Grid
@@ -424,6 +534,7 @@ function OpenHouse:AddItemToHouseGrid(house)
 		local latestRow = wnd:GetRowCount()
 		
 		wnd:SetCellText(latestRow, sPropertyNameColumn,house.sPropertyName)
+		wnd:SetCellText(latestRow, sPlugsColumn,house.sPlugs)
 		wnd:SetCellText(latestRow, sNotesColumn,house.sNotes)
 		
 	end
@@ -543,27 +654,37 @@ function OpenHouse:OnGoHomeSelected( wndHandler, wndControl, eMouseButton )
 end
 
 -- Save current house butotn click
-function OpenHouse:OnFavCurrentHouse( wndHandler, wndControl, eMouseButton )
+function OpenHouse:OnFavCurrentHouse( wndHandler, wndControl, eMouseButton, sNote)
 	local tCurrentResidence = HousingLib.GetResidence()
 	
 	if tCurrentResidence then
-		local houseOwner = tCurrentResidence:GetPropertyOwnerName()
-		local tOhHouse = tHouseTemplate.CreateNewHouse{sPlayerName =  houseOwner , sPropertyName = self:GetCurrentPropertyName(), sNotes = ""} 
+		local houseOwner = string.lower(tCurrentResidence:GetPropertyOwnerName())
+		local tOhHouse = tHouseTemplate.CreateNewHouse{sPlayerName =  houseOwner, sNotes = sNote or ""} 
 	
-		self:AddFavHouse(tOhHouse)
+		self:AddFavHouse(tOhHouse, true)
+		
 	end
 end
 
+
 -- Add House by name button click
-function OpenHouse:OnAddHouseByName( wndHandler, wndControl, eMouseButton )
+function OpenHouse:OnAddHouseByName(wndHandler, wndControl, eMouseButton )
 	local sPlayerName = wndControl:GetParent():FindChild("txtBoxPlayerName")
 	
 	if sPlayerName then
-		local tOhHouse = tHouseTemplate.CreateNewHouse{sPlayerName = OpenHouse.Trim(sPlayerName:GetText())}
+		self:AddHouseByName(sPlayerName:GetText())
 		sPlayerName:SetText("")
-		self:AddFavHouse(tOhHouse)
 	end
-	
+end
+
+function OpenHouse:AddHouseByName(sPlayerName, sNote)
+
+	if HousingLib.IsHousingWorld() and string.lower(self:GetCurrentPropertyOwner()) == self.Trim(string.lower(sPlayerName)) then
+		self:OnFavCurrentHouse(nil,nil,nil, sNote)
+	else
+		local tOhHouse = tHouseTemplate.CreateNewHouse{sPlayerName = self.Trim(sPlayerName), sNotes = sNote}
+		self:AddFavHouse(tOhHouse)
+	end	
 end
 
 --Delete house button click
@@ -572,15 +693,25 @@ function OpenHouse:OnDeleteFavHouse( wndHandler, wndControl, eMouseButton )
 	local wnd  =  self.wndMain:FindChild("houseGrid")
 	
 	local nCurrentRow = wnd:GetCurrentRow()
-	local sSelectedPlayer = self:GetSelectedPlayerFromGrid()
-		
-	if nCurrentRow then
-		wnd:DeleteRow(nCurrentRow)
-	end	
 	
-	if sSelectedPlayer then
-		self.favHouses[sSelectedPlayer] = nil
+	if nCurrentRow then		
+		local sSelectedPlayer = string.lower(self:GetSelectedPlayerFromGrid())
+			
+		if nCurrentRow then
+			wnd:DeleteRow(nCurrentRow)
+		end	
+		
+		if sSelectedPlayer then
+			self.favHouses[sSelectedPlayer] = nil
+		end
+		
+		self:ClearDetailsPaneValues()
+		
+		local nPrevRow = nCurrentRow - 1
+		
+		
 	end
+
 end
 
 --Visit random house button click
@@ -680,33 +811,56 @@ end
 
 function OpenHouse:SetDetailsPaneValues()
 	local wnd = self.wndMain:FindChild("DetailsForm")
-	
+		
 	wnd:FindChild("txtPlayerName"):SetText(self.tSelectedHouse.sPlayerName)
 	wnd:FindChild("txtPropertyName"):SetText(self.tSelectedHouse.sPropertyName)
+	wnd:FindChild("txtPlugs"):SetText(self.tSelectedHouse.sPlugs)
 	wnd:FindChild("txtPlayerNotes"):SetText(self.tSelectedHouse.sNotes)
+end
+
+function OpenHouse:ClearDetailsPaneValues()
+	local wnd = self.wndMain:FindChild("DetailsForm")
+	
+	wnd:FindChild("txtPlayerName"):SetText("")
+	wnd:FindChild("txtPropertyName"):SetText("")
+	wnd:FindChild("txtPlugs"):SetText("")
+	wnd:FindChild("txtPlayerNotes"):SetText("")
 end
 
 -----------------------------------------------------------------------------------------------
 -- Save/Load
 -----------------------------------------------------------------------------------------------
 function OpenHouse:OnSave(eLevel)
-	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.Character then return nil end
+	if  eLevel ~= GameLib.CodeEnumAddonSaveLevel.Realm and eLevel ~= GameLib.CodeEnumAddonSaveLevel.Character then return nil end
 	
-	self.settings.tAnchorPoints = {self.wndMain:GetAnchorPoints()}
-	self.settings.tAnchorOffsets = {self.wndMain:GetAnchorOffsets()}
+	if eLevel == GameLib.CodeEnumAddonSaveLevel.Realm then
+		self.settings.tAnchorPoints = {self.wndMain:GetAnchorPoints()}
+		self.settings.tAnchorOffsets = {self.wndMain:GetAnchorOffsets()}
+				
+		return {houses = CopyTable(self.favHouses), settings = CopyTable(self.settings)}
 		
-	return {houses = CopyTable(self.favHouses), settings = CopyTable(self.settings)}
+	elseif eLevel == GameLib.CodeEnumAddonSaveLevel.Character and not self.settings.hasSaveTransitioned then
+		self.settings.hasSaveTransitioned = true
+		return {houses = CopyTable(self.favHouses), settings = CopyTable(self.settings)}
+	end
 	
 end
 
 function OpenHouse:OnRestore(eLevel,tSaveData)
-	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.Character then return end
+	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.Realm and eLevel ~= GameLib.CodeEnumAddonSaveLevel.Character  then return end
 	
 	if tSaveData then
-		
-		self.favHouses = CopyTable(tSaveData.houses,self.favHouses) or {}
-		self.settings = CopyTable(tSaveData.settings, self.settings) or {}
-	end					
+		if eLevel == GameLib.CodeEnumAddonSaveLevel.Character and tSaveData.settings.hasSaveTransitioned then
+			self.settings.hasSaveTransitioned = true
+		elseif  eLevel == GameLib.CodeEnumAddonSaveLevel.Character then
+			self.favHouses = CopyTable(tSaveData.houses,self.favHouses) or {}
+			self.settings = CopyTable(tSaveData.settings, self.settings) or {}
+		elseif eLevel == GameLib.CodeEnumAddonSaveLevel.Realm then
+			self.favHouses = CopyTable(tSaveData.houses,self.favHouses) or {}
+			self.settings = CopyTable(tSaveData.settings, self.settings) or {}
+
+		end		
+	end
 end
 
 -----------------------------------------------------------------------------------------------
