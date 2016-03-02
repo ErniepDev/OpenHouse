@@ -100,8 +100,8 @@ function OpenHouse:OnLoad()
 	self.xmlDoc = XmlDoc.CreateFromFile("OpenHouse.xml")
 	self.xmlDoc:RegisterCallback("OnDocLoaded", self)
 	
-    self.contextMenu = Apollo.GetAddon("ContextMenuPlayer")
-	self:ContextMenuCheck()
+   -- self.contextMenu = Apollo.GetAddon("ContextMenuPlayer")
+	--self:ContextMenuCheck()
 	
 end
 
@@ -135,7 +135,7 @@ function OpenHouse:OnDocLoaded()
 		--Apollo.RegisterEventHandler("WindowManagementReady", "OnWindowManagementReady", self)
 		Apollo.RegisterEventHandler("InterfaceMenuListHasLoaded", "OnInterfaceMenuListHasLoaded", self)
 		Apollo.RegisterEventHandler("ToggleOpenHouse", "OnToggleOpenHouse", self)
-	    Apollo.RegisterEventHandler("TargetUnitChanged", "ContextMenuCheck", self)				
+	    --Apollo.RegisterEventHandler("TargetUnitChanged", "ContextMenuCheck", self)				
 		-- Do additional Addon initialization here
 		for k,v in pairs(self.favHouses) do
 			setmetatable(self.favHouses[k],tHouseTemplate.metaTable)
@@ -199,7 +199,7 @@ end
 
 function OpenHouse:OnOpenHouseGoHome()
 	if HousingLib.IsHousingWorld() then
-		HousingLib.RequestVisitPlayer(GameLib.GetPlayerUnit():GetName())
+		HousingLib.RequestTakeMeHome()
 	end
 end
 
@@ -412,7 +412,7 @@ end
 
 
 -- Add an extra button to the player context menu
-function OpenHouse:ContextMenuCheck()
+--[[function OpenHouse:ContextMenuCheck()
     local oldRedrawAll = self.contextMenu.RedrawAll
     
     self.contextMenu.RedrawAll = function(context)
@@ -441,8 +441,8 @@ function OpenHouse:ContextMenuCheck()
      	local tOhHouse = tHouseTemplate.CreateNewHouse{sPlayerName = self.Trim(context.strTarget)}
 		self:AddFavHouse(tOhHouse)
     end    
-end
-end
+
+end]]
 
 
 -----------------------------------------------------------------------------------------------
@@ -650,7 +650,7 @@ end
 
 -- Go Home button click
 function OpenHouse:OnGoHomeSelected( wndHandler, wndControl, eMouseButton )
-	HousingLib.RequestVisitPlayer(GameLib.GetPlayerUnit():GetName())
+	self:OnOpenHouseGoHome()
 end
 
 -- Save current house butotn click
